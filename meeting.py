@@ -129,6 +129,34 @@ class MeetingNotesRAGSystemEmbeddingsOnly:
         embedding = self.embedding_model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
     
+    def check_file_exists(self, pdf_filename: str) -> bool:
+        """
+        Check if PDF file already exists in database
+        """
+        try:
+            existing = self.chunks_col.find_one({"source_file": pdf_filename})
+            return existing is not None
+        except Exception as e:
+            print(f"❌ Error checking file existence: {e}")
+            return False
+    
+    def get_file_info(self, pdf_filename: str) -> Dict:
+        """
+        Get information about an existing file
+        """
+        try:
+            count = self.chunks_col.count_documents({"source_file": pdf_filename})
+            first_doc = self.chunks_col.find_one({"source_file": pdf_filename})
+            
+            return {
+                "exists": True,
+                "chunk_count": count,
+                "created_at": first_doc.get('created_at') if first_doc else None
+            }
+        except Exception as e:
+            print(f"❌ Error getting file info: {e}")
+            return {"exists": False}
+    
     def store_embeddings(self, meeting_notes: str, pdf_filename: str = "meeting_notes.pdf") -> bool:
         """
         Store ONLY embeddings (no structured JSON data)
@@ -165,6 +193,17 @@ class MeetingNotesRAGSystemEmbeddingsOnly:
         except Exception as e:
             print(f"❌ Error storing embeddings: {e}")
             return False
+    
+    def list_all_files(self) -> List[str]:
+        """
+        List all unique PDF files stored in the database
+        """
+        try:
+            files = self.chunks_col.distinct("source_file")
+            return files
+        except Exception as e:
+            print(f"❌ Error listing files: {e}")
+            return []
     
     def vector_search(self, query: str, top_k: int = 5) -> List[Dict]:
         """
@@ -316,31 +355,85 @@ def main():
         
         pdf_filename = os.path.basename(pdf_path)
         
-        # Step 2: Extract text
-        print()
-        document_text = rag_system.extract_text_from_pdf(pdf_path)
+        # Step 2: Check if file already exists
+        print("\n🔍 Checking if file already exists in database...")
+        file_exists = rag_system.check_file_exists(pdf_filename)
         
-        if not document_text:
-            print("❌ Failed to extract text from PDF!")
-            return
-        
-        # Step 3: Store ONLY embeddings (no structured data)
-        print("="*100)
-        print("STEP 2: CREATING AND STORING EMBEDDINGS")
-        print("="*100 + "\n")
-        
-        success = rag_system.store_embeddings(document_text, pdf_filename)
-        
-        if not success:
-            print("❌ Failed to store embeddings!")
-            return
+        if file_exists:
+            print(f"✅ File '{pdf_filename}' already exists in database!")
+            
+            # Get file info
+            file_info = rag_system.get_file_info(pdf_filename)
+            print(f"📊 Existing file info:")
+            print(f"   - Chunks stored: {file_info.get('chunk_count', 0)}")
+            print(f"   - Added on: {file_info.get('created_at', 'N/A')}")
+            
+            # Ask user what to do
+            print("\n❓ What would you like to do?")
+            print("   1. Use existing file (skip processing)")
+            print("   2. Re-process and replace existing file")
+            print("   3. Cancel")
+            
+            choice = input("\nEnter your choice (1/2/3): ").strip()
+            
+            if choice == "1":
+                print(f"\n✅ Using existing file '{pdf_filename}' from database")
+                print("⏭️  Skipping to question answering...\n")
+            elif choice == "2":
+                print(f"\n🗑️  Deleting old embeddings for '{pdf_filename}'...")
+                deleted_count = rag_system.chunks_col.delete_many({"source_file": pdf_filename}).deleted_count
+                print(f"✅ Deleted {deleted_count} old embeddings")
+                
+                # Extract and store new
+                print("\n📄 Processing PDF file...")
+                document_text = rag_system.extract_text_from_pdf(pdf_path)
+                
+                if not document_text:
+                    print("❌ Failed to extract text from PDF!")
+                    return
+                
+                print("="*100)
+                print("STEP 2: CREATING AND STORING NEW EMBEDDINGS")
+                print("="*100 + "\n")
+                
+                success = rag_system.store_embeddings(document_text, pdf_filename)
+                
+                if not success:
+                    print("❌ Failed to store embeddings!")
+                    return
+            else:
+                print("\n❌ Operation cancelled!")
+                return
+        else:
+            print(f"📝 File '{pdf_filename}' is NEW - will process and store")
+            
+            # Extract text
+            print("\n📄 Processing PDF file...")
+            document_text = rag_system.extract_text_from_pdf(pdf_path)
+            
+            if not document_text:
+                print("❌ Failed to extract text from PDF!")
+                return
+            
+            # Store embeddings
+            print("="*100)
+            print("STEP 2: CREATING AND STORING EMBEDDINGS")
+            print("="*100 + "\n")
+            
+            success = rag_system.store_embeddings(document_text, pdf_filename)
+            
+            if not success:
+                print("❌ Failed to store embeddings!")
+                return
         
         # Step 4: Ask questions using vector search
         print("="*100)
         print("STEP 3: ASK QUESTIONS (POWERED BY VECTOR SIMILARITY SEARCH)")
         print("="*100)
         print("\n💬 Your questions will be converted to embeddings and matched with relevant content.")
-        print("Type 'exit' to quit\n")
+        print("📁 Commands:")
+        print("   - Type 'list' to see all files in database")
+        print("   - Type 'exit' to quit\n")
         
         while True:
             user_question = input("❓ Your question: ").strip()
@@ -348,11 +441,23 @@ def main():
             if user_question.lower() == 'exit':
                 print("\n👋 Thank you for using the RAG System!")
                 break
+            elif user_question.lower() == 'list':
+                print("\n📁 Files in database:")
+                files = rag_system.list_all_files()
+                if files:
+                    for idx, file in enumerate(files, 1):
+                        info = rag_system.get_file_info(file)
+                        print(f"   {idx}. {file} ({info.get('chunk_count', 0)} chunks)")
+                else:
+                    print("   No files found in database")
+                print()
             elif user_question:
                 print()
                 answer = rag_system.answer_question(user_question)
                 print(f"\n💡 Answer:\n{answer}\n")
                 print("-"*100 + "\n")
+            else:
+                print("⚠️  Please enter a question\n")
         
         rag_system.close()
         
