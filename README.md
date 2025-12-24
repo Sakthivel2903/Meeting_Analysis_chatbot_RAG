@@ -1,6 +1,6 @@
-Create a .env file on same folder 
-Enter the api key of Groq 
-Enter the connection string of mongo db atlas
+>Create a .env file on same folder 
+>Enter the api key of Groq 
+>Enter the connection string of mongo db atlas
 
 IMPORTANT:
 Step-by-Step: MongoDB Atlas Vector Search Setup
